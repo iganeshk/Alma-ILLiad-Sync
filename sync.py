@@ -146,29 +146,6 @@ def upload_ftp():
     session.quit()
 
 
-def assert_upload():
-    # urllib.urlretrieve('ftp://server/path/to/file', 'file')
-    logprint("\n[info] connecting to FTP Server: " + FTP_SERVER)
-    session = ftplib.FTP()
-    session.connect(FTP_SERVER, FTP_PORT)
-    session.login(FTP_USERNAME, FTP_PASSWORD)
-    session.chdir('//')
-    try:
-        logprint("[info] Verifying upload....")
-        file = open(OUTPUT_FILE, 'wb')                              # file to download
-        os.mkdir('tmp')
-        os.chdir('tmp')
-        session.retrbinary('RETR %s' % OUTPUT_FILE, file.write)     # download the file
-        file.close()                                                # close file and FTP
-        if os.path.isfile(OUTPUT_FILE):
-            os.remove(OUTPUT_FILE)
-        os.chdir('..')
-        os.rmdir('tmp')
-    except e:
-        print(str(e).split(None, 1)[0])
-    session.quit()
-
-
 def extractAll(zipName, dir):
     z = zip(zipName)
     for f in z.namelist():
