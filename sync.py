@@ -22,7 +22,7 @@ from email.mime.application import MIMEApplication
 # Input and Output File Declaration
 TARGET_FILE = ('ILLiad UserValidation.txt')  # File in the report archive(zip)
 OUTPUT_FILE = ('UserValidation.txt')  # Desired File
-# OUTPUT_FILE =('temp.txt') # Desired File
+
 LOGGING = True
 BACKGROUND_ENABLED = True
 SLEEP_INTERVAL = 900  # Seconds (BACKGROUND MUST BE ENABLED!)
@@ -297,6 +297,6 @@ if __name__ == '__main__':
                     time.sleep(SLEEP_INTERVAL)
                 except KeyboardInterrupt:
                     logprint("[debug] interrupted")
-                    sys.exit()
+                    os._exit(0)
             else:
                 break
