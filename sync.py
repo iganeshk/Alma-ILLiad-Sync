@@ -3,12 +3,12 @@
 #
 # Sync Alma - ILLiad Database
 # Developer: Ganesh Anand Velu
-# Version: 0.4
+# Version: 0.5
 #
 # Description: Downloads email report sent from Alma and extracts the document(.txt report). Then,
 # creates a new document with UTF-8 encoding, parses the hard-coded UserValidation lines and
 # and the report itself. And finally, uploads the generated documented to the specified FTP server.
-# Note: Entries with barcodes having "-" are discarded due to import error w/ ILLiad.  (line: 67-68)
+# Note: Entries with barcodes having "-" are discarded due to import error w/ ILLiad.  (line: 91-108)
 #       Usage: python3 sync.py
 
 import sys, os, codecs, datetime, time, logging
