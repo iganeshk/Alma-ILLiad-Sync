@@ -3,7 +3,7 @@
 #
 # Sync Alma - ILLiad Database
 # Developer: Ganesh Anand Velu
-# Version: 0.5
+# Version: 0.7 (03092018)
 #
 # Description: Downloads email report sent from Alma and extracts the document(.txt report). Then,
 # creates a new document with UTF-8 encoding, parses the hard-coded UserValidation lines and
@@ -19,31 +19,38 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 
-# Input and Output File Declaration
-TARGET_FILE = ('ILLiad UserValidation.txt')  # filename in the report archive(zip)
+if sys.version_info <= (3, 0):
+    sys.stdout.write("Sorry, requires Python 3.x, not Python 2.x\n")
+    sys.exit(1)
+
+# Input and Output file declarationn
+TARGET_FILE = (
+    'ILLiad UserValidation.txt')  # filename in the report archive(zip)
 OUTPUT_FILE = ('UserValidation.txt')  # output filename
 
 LOGGING = True
 BACKGROUND_ENABLED = True
-SLEEP_INTERVAL = 900  # Seconds (BACKGROUND MUST BE ENABLED!)
+SLEEP_INTERVAL = 900  # seconds (BACKGROUND MUST BE ENABLED!)
 
 # EMAIL (IMAP & SMTP) Login Credentials
 EMAIL_USER = ""
 EMAIL_PASS = ""
-IMAP_SERVER = "outlook.office365.com"
+IMAP_SERVER = ""
 IMAP_PORT = 993
-SMTP_SERVER = "smtp-mail.outlook.com"
+SMTP_SERVER = ""
 SMTP_PORT = 587
+# Alma Report Dispatcher's email address
 EMAIL_SENDER = ""  # e-mail address of the incoming reports
-EMAIL_AGE_LIMIT = 5     # message age cut-off (days)
-# destination FTP Credentials
+EMAIL_AGE_LIMIT = 5  # email expiry (days)
+
+# Payload destination FTP credentials
 FTP_SERVER = ''
 FTP_PORT = 21
 FTP_USERNAME = ''
 FTP_PASSWORD = ''
-FTP_DIRECTORY = ''
+FTP_DIRECTORY = '/illiad/import/'
 
-# ILLiad import note: carriage-Return, line-feed(CRLF) \r\n on line end
+# ILLiad File Import Notes: Carriage-Return, Line-feed \r\n (CRLF)
 # hardcoded ILLiad Validation text Identifier
 illiad_header = (
     'separator=,\r\nUserName, UserValidationType, LastName, FirstName, SSN, Status, EMailAddress'
@@ -51,7 +58,7 @@ illiad_header = (
     ' AuthorizedUsers, Web, Address, Address2, City, State, Zip, Site, Number, Organization, Fax, '
     'ArticleBillingCategory, LoanBillingCategory, Country, SAddress, SAddress2, SCity, SState, SZip, PasswordHint,'
     ' SCountry, Blocked, PlainTextPassword, UserRequestLimit, UserInfo1, UserInfo2, UserInfo3, UserInfo4, UserInfo5\r\n'
-    )
+)
 
 new_mail = False
 from_addr = EMAIL_USER
@@ -75,61 +82,77 @@ class Logger:
 def parse_alma_data(target_path):
     conv_success = False
 
-    # CSV Approach for Alma Analytics Report (.txt)
-    with codecs.open(target_path + "/" + OUTPUT_FILE, 'wb+', encoding='utf-8') as illiad_file:        # utf16/8/cp1252 output
+    # CSV approach for Alma analytics report (.txt)
+    with codecs.open(
+            target_path + "/" + OUTPUT_FILE, 'wb+',
+            encoding='utf-8') as illiad_file:  # utf16/8/cp1252 output
         illiad_file.write(illiad_header)
-        with open(target_path + "/" + TARGET_FILE, newline='', encoding='utf-16-le') as alma_input:   # Alma report(utf-16-le)
+        with open(
+                target_path + "/" + TARGET_FILE, newline='',
+                encoding='utf-16-le') as alma_input:  # Alma report(utf-16-le)
             alma_data = csv.reader(alma_input, dialect="excel-tab")
             for index, line in enumerate(alma_data):
+                error_strings = "Line " + (str(index + 1))
                 # discard anomalies from input (illiad import case)
-                if "-" in line[1]:                              # barcode anomaly (-)
+                if "-" in line[1]:  # barcode anomaly (-)
+                    error_strings = error_strings + " [Barcode: " + line[1] + "]"
                     continue
-                if "," in line[2]:                              # last name anomaly (,)
-                    anamoly = line[2].find(",")
-                    if (len(line[2]) - anamoly) == 1:
-                        line[2] = line[2].replace(",", "")
-                    elif line[2][anamoly+1] == " ":
-                        line[2] = line[2].replace(",", "")
-                    else:
-                        line[2] = line[2].replace(",", " ")
-                if "," in line[3]:                              # first name anomaly (,)
+                if "," in line[3]:  # last name anomaly (,)
+                    error_strings = error_strings + " [Last Name: " + line[3] + "]"
                     anamoly = line[3].find(",")
                     if (len(line[3]) - anamoly) == 1:
                         line[3] = line[3].replace(",", "")
-                    elif line[3][anamoly+1] == " ":
+                    elif line[3][anamoly + 1] == " ":
                         line[3] = line[3].replace(",", "")
                     else:
                         line[3] = line[3].replace(",", " ")
+                if "," in line[4]:  # first name anomaly (,)
+                    error_strings = error_strings + " [First Name: " + line[4] + "]"
+                    anamoly = line[4].find(",")
+                    if (len(line[4]) - anamoly) == 1:
+                        line[4] = line[4].replace(",", "")
+                    elif line[4][anamoly + 1] == " ":
+                        line[4] = line[4].replace(",", "")
+                    else:
+                        line[4] = line[4].replace(",", " ")
                 # anomaly detector ends here
                 if line[0] == "Barcode":
-                    lastname = line[2].lower()                          # convert the last name to lowercase (hard coded output)
+                    lastname = line[3].lower(
+                    )  # convert the last name to lowercase (hard coded output)
                     illiad_file.write(
-                        "{},Auth,{},{},{},{},,,,,,ILL,,E-Mail,Hold for Pickup,Hold for Pickup,,,,,,,,,,,,,,,,,,,,Your last name,,,{},,,,,,\r\n"
-                        .format(line[1], line[2], line[3], line[4], line[5], lastname))
+                        "{},Auth,{},{},{},{},,,,,ILL,,E-Mail,Hold for Pickup,Hold for Pickup,,,,,,,,,,,,,,,,,,,,Your last name,,,{},,,,,,\r\n"
+                        .format(line[1], line[3], line[4], line[5], line[6],
+                                lastname))
                     conv_success = True
                 else:
                     if line[0] == "Identifier":
-                        print("Bad data at index: "+(str(index+1)))
+                        print("Bad data at index: " + (str(index + 1)))
+                if error_strings != "Line " + (str(index + 1)):
+                    with open(target_path + "/" + "errors.txt",
+                              "a") as string_dump:
+                        string_dump.write(error_strings + "\r\n")
             if conv_success:
-                logprint("[info] processed total of " + str((index)) + " entries.")
-                logprint("[info] translation completed!")
+                logprint("[info]","processed total of " + str(
+                    (index)) + " entries.")
+                logprint("[info]","translation completed!")
 
 
 def upload_ftp(target_path):
-    logprint("[ftp-info] establishing connection to: %s" % FTP_SERVER)
+    logprint("[ftp-info]","establishing connection to: %s" % FTP_SERVER)
     session = ftplib.FTP()
     try:
         session.connect(FTP_SERVER, FTP_PORT)
         session.login(FTP_USERNAME, FTP_PASSWORD)
-        logprint("[ftp-info] connected and logged into FTP server")
-        session.cwd(FTP_DIRECTORY)                                  # change the directory
-        logprint("[ftp-info] uploading file....")
-        file = open(target_path, 'rb')         # file to upload
-        session.storbinary('STOR %s' % OUTPUT_FILE, file)           # upload the file
-        file.close()                                                # close file and FTP
-        logprint("[ftp-info] file successfully uploaded")
+        logprint("[ftp-info]","connected and logged into FTP server")
+        session.cwd(FTP_DIRECTORY)  # change the directory
+        logprint("[ftp-info]","uploading file....")
+        file = open(target_path, 'rb')  # file to upload
+        session.storbinary('STOR %s' % OUTPUT_FILE, file)  # upload the file
+        file.close()  # close file and FTP
+        logprint("[ftp-info]","file successfully uploaded")
     except ftplib.all_errors as e:
-        logprint("[ftp-error] FTP: %s" % e)                         # display the error
+        # print(str(e).split(None, 1)[0])                           # get only error code
+        logprint("[ftp-error]","FTP: %s" % e)  # display the error
     session.quit()
 
 
@@ -150,18 +173,20 @@ def get_mail(target_path):
     att_path = ""
     m = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
     try:
-        logprint("[mail-info] logging into mail")
+        logprint("[mail-info]","logging into mail")
         m.login(EMAIL_USER, EMAIL_PASS)
         m.select('Inbox')
-        (result, messages) = m.search(None, ('UNSEEN'), '(FROM {0})'.format(EMAIL_SENDER.strip()), '(SUBJECT "ILLiad UserValidation")')
+        (result, messages) = m.search(None, ('UNSEEN'), '(FROM {0})'.format(
+            EMAIL_SENDER.strip()), '(SUBJECT "ILLiad UserValidation")')
         if result == "OK":
             if len(messages[0].split()) > 0:
-                logprint("[mail-info] total new %s mail(s)" % len(messages[0].split()))
+                logprint("[mail-info]","total new %s mail(s)" % len(
+                    messages[0].split()))
             for message_index, message in enumerate(messages[0].split()):
                 try:
                     resp, data = m.fetch(message, '(RFC822)')
                 except Exception as e:
-                    logprint("[mail-error] unable to load mail, %s" % e)
+                    logprint("[mail-error]","unable to load mail, %s" % e)
                     m.close()
                     exit()
                 msg = email.message_from_bytes(data[0][1])
@@ -169,11 +194,14 @@ def get_mail(target_path):
                 # check mail's age (time difference)
                 date_tuple = email.utils.parsedate_tz(msg['Date'])
                 if date_tuple:
-                    local_mail_date = datetime.datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
+                    local_mail_date = datetime.datetime.fromtimestamp(
+                        email.utils.mktime_tz(date_tuple))
                     time_diff = datetime.datetime.now() - local_mail_date
                     if time_diff.days > EMAIL_AGE_LIMIT:
-                        logprint("[mail-info] skipping email %s received more than %s days ago ( %s )" % (message_index+1
-                            , EMAIL_AGE_LIMIT, local_mail_date.strftime("%Y-%m-%d %H:%M")))
+                        logprint(
+                            "[mail-info]","skipping email %s received more than %s days ago ( %s )"
+                            % (message_index + 1, EMAIL_AGE_LIMIT,
+                               local_mail_date.strftime("%Y-%m-%d %H:%M")))
                         continue
 
                 for part in msg.walk():
@@ -183,24 +211,24 @@ def get_mail(target_path):
                         continue
                     filename = part.get_filename()
                     if "zip" in filename:
-                            if not os.path.isdir(target_path):
-                                os.mkdir(target_path)
-                            att_path = os.path.join(target_path, filename)
-                            try:
-                                fp = open(att_path, 'wb')
-                                fp.write(part.get_payload(decode=True))
-                                fp.close()
-                                extractAll(att_path, target_path)
-                                new_mail = True
-                                logprint('[mail-info] attachment: %s' % att_path)
-                            except Exception as e:
-                                logprint("%s" % e)
-                                att_path = "[mail-error] unable to extract attachment"
+                        if not os.path.isdir(target_path):
+                            os.mkdir(target_path)
+                        att_path = os.path.join(target_path, filename)
+                        try:
+                            fp = open(att_path, 'wb')
+                            fp.write(part.get_payload(decode=True))
+                            fp.close()
+                            extractAll(att_path, target_path)
+                            new_mail = True
+                            logprint('[mail-info]','attachment: %s' % att_path)
+                        except Exception as e:
+                            logprint('[mail-info]',"%s" % e)
+                            att_path = "unable to extract attachment"
     except KeyboardInterrupt:
-        logprint("[mail-error] login interrupted")
+        logprint("[mail-error]","login interrupted")
         os._exit(0)
     except Exception as e:
-        logprint("[mail-error] %s" % e)
+        logprint("[mail-error]","%s" % e)
         os._exit(0)
     # logprint("[mail] terminating imap connection")
     m.shutdown()
@@ -217,78 +245,95 @@ def send_mail(from_addr, to_addrs, msg):
         server.sendmail(from_addr, to_addrs, msg.as_string())
         server.quit()
     except Exception as e:
-        logprint("[mail-error] unknown exception error occurred while sending email\n%s" % e)
+        logprint(
+            "[mail-error]", "unknown exception error occurred while sending email\n%s"
+            % e)
 
 
-def send_notification(status):
-    # Read email list
+def send_notification(status, log_time, target_path):
+    # read email list
     email_list = [line.strip() for line in open('./email.txt')]
-
     for to_addrs in email_list:
         msg = MIMEMultipart("alternative")
 
         msg['Subject'] = "Alma - ILLiad Sync Notification"
         msg['From'] = from_addr
         msg['To'] = to_addrs
+
         if status == "success":
             html = open('./success.html', 'rb').read()
         else:
             html = open('./failed.html', "rb").read()
+            logs = MIMEApplication(open('./logs/sync-log_' + log_time))
         # Attach HTML to the email
         body = MIMEText(html, 'html', 'UTF-8')
         msg.attach(body)
+        if os.path.isfile(target_path + "/errors.txt"):
+            error_list = MIMEApplication(
+                open(target_path + "/errors.txt", "rb").read())
+            error_list.add_header(
+                'Content-Disposition', 'attachment', filename="error_log.txt")
+            msg.attach(error_list)
+            msg['Subject'] = "Alma - ILLiad Sync Notification"
         try:
             send_mail(from_addr, to_addrs, msg)
-            logprint("[mail-info]  email successfully sent to " + to_addrs)
+            logprint("[mail-info]","email sent to " + to_addrs)
         except SMTPAuthenticationError as e:
-            logprint("[mail-error]  %s" % e)
+            logprint("[mail-error]", e)
 
 
-def logprint(stdout):
-    print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\t" + stdout)
+def logprint(code, stdout):
+    # print(
+    #     datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\t" + stdout)
+    print("%-*s %-*s %s" %
+          (23, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 15, code,
+           stdout))
 
 
 if __name__ == '__main__':
 
     if not (EMAIL_USER and EMAIL_PASS and IMAP_SERVER and IMAP_PORT):
-        print("\n[error] email credentials or server parameters empty!\n")
+        logprint("\n[error]","email credentials or server parameters empty!\n")
         os._exit(0)
 
     if not (FTP_SERVER and FTP_PORT and FTP_USERNAME and FTP_PASSWORD):
-        print("\n[error] ftp server credentials or parameters empty!\n")
+        logprint("\n[error]","ftp server credentials or parameters empty!\n")
         os._exit(0)
 
     if LOGGING:
         if not os.path.exists("./logs"):
             os.mkdir("./logs")
-        log_file = open("./logs/sync-log_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M") + ".txt", "w")
+        log_file = open(
+            "./logs/sync-log_" +
+            datetime.datetime.now().strftime("%Y-%m-%d_%H-%M") + ".txt", "w")
         sys.stdout = Logger(log_file, sys.stdout)
 
-    logprint("[info] initiating...")
+    logprint("[info]","initiating...")
     while True:
-            # implement socket here
-            date_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
-            DOWNLOAD_FOLDER = os.path.join(os.path.dirname(os.path.realpath(__file__)), date_time)
-            TARGET_PATH = get_mail(DOWNLOAD_FOLDER)    # attachment file target path
-            if os.path.isfile(TARGET_PATH):
-                # convert the data
-                parse_alma_data(DOWNLOAD_FOLDER)
-                # upload to ftp server
-                upload_ftp(os.path.join(DOWNLOAD_FOLDER, OUTPUT_FILE))
-                # send email notifications
-                send_notification("success")
-                # unset new email flag
-                new_mail = False
-                logprint("[info] process completed")
-            elif TARGET_PATH == "":
-                logprint("[info] no new mail!")
-            else:
-                logprint(TARGET_PATH)
-            if BACKGROUND_ENABLED:
-                try:
-                    time.sleep(SLEEP_INTERVAL)
-                except KeyboardInterrupt:
-                    logprint("[debug] interrupted")
-                    os._exit(0)
-            else:
-                break
+        # implement socket here
+        date_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+        DOWNLOAD_FOLDER = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), date_time)
+        TARGET_PATH = get_mail(DOWNLOAD_FOLDER)  # attachment file target path
+        if os.path.isfile(TARGET_PATH):
+            # convert the data
+            parse_alma_data(DOWNLOAD_FOLDER)
+            # upload to ftp server
+            upload_ftp(os.path.join(DOWNLOAD_FOLDER, OUTPUT_FILE))
+            # send email notifications
+            send_notification("success", date_time, DOWNLOAD_FOLDER)
+            # unset new email flag
+            new_mail = False
+            logprint("[info]","process completed")
+        elif TARGET_PATH == "":
+            logprint("[info]","no new mail!")
+        else:
+            logprint("[mail-error]",TARGET_PATH)
+        if BACKGROUND_ENABLED:
+            try:
+                time.sleep(SLEEP_INTERVAL)
+            except KeyboardInterrupt:
+                logprint("[debug]","interrupted")
+                os._exit(0)
+        else:
+            break

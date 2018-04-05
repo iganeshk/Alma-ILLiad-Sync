@@ -1,4 +1,6 @@
 # Byte-compiled / optimized / DLL files
+syncv2.py
+*.bak
 __pycache__/
 *.py[cod]
 *$py.class
