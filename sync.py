@@ -3,27 +3,23 @@
 #
 # Sync Alma - ILLiad Database
 # Developer: Ganesh Anand Velu
-# Version: 0.7 (03092018)
+# Version: 0.9 (05222018)
 #
 # Description: Downloads email report sent from Alma and extracts the document(.txt report). Then,
 # creates a new document with UTF-8 encoding, parses the hard-coded UserValidation lines and
 # and the report itself. And finally, uploads the generated documented to the specified FTP server.
-# Note: Entries with barcodes having "-" are discarded due to import error w/ ILLiad.  (line: 91-108)
+# Note: Entries with barcodes having "-" are discarded to avoid import errors w/ ILLiad.  (line: 91-108)
 #       Usage: python3 sync.py
 
 import sys, os, codecs, datetime, time, logging, signal
 import argparse
 import csv
-from configparser import ConfigParser, NoOptionError, NoSectionError, DuplicateSectionError
+from configparser import ConfigParser
 import imaplib, email, ftplib, smtplib
 from zipfile import ZipFile as zip
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-
-if sys.version_info <= (3, 0):
-    sys.stdout.write("Sorry, requires Python 3.x, not Python 2.x\n")
-    sys.exit(1)
 
 # Input and Output file declarationn
 TARGET_FILE = (
@@ -32,18 +28,19 @@ OUTPUT_FILE = ('UserValidation.txt')  # output filename
 
 LOGGING = True
 BACKGROUND_ENABLED = True
-SLEEP_INTERVAL = 5  # seconds (BACKGROUND MUST BE ENABLED!)
+SLEEP_INTERVAL = 900  # seconds (BACKGROUND MUST BE ENABLED!)
 
 # EMAIL (IMAP & SMTP) Login Credentials
 EMAIL_USER = ""
 EMAIL_PASS = ""
 IMAP_SERVER = ""
 IMAP_PORT = 993
-SMTP_SERVER = ""
+SMTP_SERVER = "smtp-mail.outlook.com"
 SMTP_PORT = 587
 # Alma Report Dispatcher's email address
 EMAIL_SENDER = "Your.Department@organization.com"  # e-mail address of the incoming reports
 EMAIL_AGE_LIMIT = 5  # email expiry (days)
+EMAIL_FROM = EMAIL_USER
 
 # Payload destination FTP credentials
 FTP_SERVER = ''
@@ -51,6 +48,18 @@ FTP_PORT = 21
 FTP_USERNAME = ''
 FTP_PASSWORD = ''
 FTP_DIRECTORY = '/illiad/import/'
+
+# Config
+
+if os.path.exists("/var/run"):
+    PID_DIR = "/var/run"
+else:
+    PID_DIR = "./"
+PID_FILE = "%s/illiad_sync.pid" % PID_DIR
+cg = ConfigParser()
+parser = argparse.ArgumentParser()
+new_mail = False
+
 
 # ILLiad File Import Notes: Carriage-Return, Line-feed \r\n (CRLF)
 # hardcoded ILLiad Validation text Identifier
@@ -61,10 +70,6 @@ illiad_header = (
     'ArticleBillingCategory, LoanBillingCategory, Country, SAddress, SAddress2, SCity, SState, SZip, PasswordHint,'
     ' SCountry, Blocked, PlainTextPassword, UserRequestLimit, UserInfo1, UserInfo2, UserInfo3, UserInfo4, UserInfo5\r\n'
 )
-cg = ConfigParser()
-parser = argparse.ArgumentParser()
-new_mail = False
-from_addr = EMAIL_USER
 
 
 class Logger:
@@ -80,6 +85,19 @@ class Logger:
     def __init__(self, out1, out2):
         self.out1 = out1
         self.out2 = out2
+
+
+def pid_exists(pid):
+    if pid < 0:
+        return False  # NOTE: pid == 0 returns True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:  # errno.ESRCH
+        return False  # No such process
+    except PermissionError:  # errno.EPERM
+        return True  # Operation not permitted (i.e., process exists)
+    else:
+        return True  # no error, we can send a signal to the process
 
 
 def parse_alma_data(target_path):
@@ -135,27 +153,27 @@ def parse_alma_data(target_path):
                               "a") as error_dump:
                         error_dump.write(error_strings + "\r\n")
             if conv_success:
-                logprint("[info]","processed total of " + str(
+                logprint("[info]", "processed total of " + str(
                     (index)) + " entries.")
-                logprint("[info]","translation completed!")
+                logprint("[info]", "translation completed!")
 
 
 def upload_ftp(target_path):
-    logprint("[ftp-info]","establishing connection to: %s" % FTP_SERVER)
+    logprint("[ftp-info]", "establishing connection to: %s" % FTP_SERVER)
     session = ftplib.FTP()
     try:
         session.connect(FTP_SERVER, FTP_PORT)
         session.login(FTP_USERNAME, FTP_PASSWORD)
-        logprint("[ftp-info]","connected and logged into FTP server")
+        logprint("[ftp-info]", "connected and logged into FTP server")
         session.cwd(FTP_DIRECTORY)  # change the directory
-        logprint("[ftp-info]","uploading file....")
+        logprint("[ftp-info]", "uploading file....")
         file = open(target_path, 'rb')  # file to upload
         session.storbinary('STOR %s' % OUTPUT_FILE, file)  # upload the file
         file.close()  # close file and FTP
-        logprint("[ftp-info]","file successfully uploaded")
+        logprint("[ftp-info]", "file successfully uploaded")
     except ftplib.all_errors as e:
         # print(str(e).split(None, 1)[0])                           # get only error code
-        logprint("[ftp-error]","FTP: %s" % e)  # display the error
+        logprint("[ftp-error]", "FTP: %s" % e)  # display the error
     session.quit()
 
 
@@ -176,20 +194,20 @@ def get_mail(target_path):
     att_path = ""
     m = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
     try:
-        logprint("[mail-info]","logging into mail")
+        logprint("[mail-info]", "logging into mail")
         m.login(EMAIL_USER, EMAIL_PASS)
         m.select('Inbox')
         (result, messages) = m.search(None, ('UNSEEN'), '(FROM {0})'.format(
             EMAIL_SENDER.strip()), '(SUBJECT "ILLiad UserValidation")')
         if result == "OK":
             if len(messages[0].split()) > 0:
-                logprint("[mail-info]","total new %s mail(s)" % len(
+                logprint("[mail-info]", "total new %s mail(s)" % len(
                     messages[0].split()))
             for message_index, message in enumerate(messages[0].split()):
                 try:
                     resp, data = m.fetch(message, '(RFC822)')
                 except Exception as e:
-                    logprint("[mail-error]","unable to load mail, %s" % e)
+                    logprint("[mail-error]", "unable to load mail, %s" % e)
                     m.close()
                     exit()
                 msg = email.message_from_bytes(data[0][1])
@@ -218,7 +236,7 @@ def get_mail(target_path):
                         if not os.path.isdir(target_path):
                             os.mkdir(target_path)
                         att_path = os.path.join(target_path, filename)
-                        with open('sync.pid', 'w') as pidfile:
+                        with open(PID_FILE, 'w') as pidfile:
                             cg.set('sync', 'clean_exit', 'false')
                             cg.set('sync', 'file', '%s' % att_path)
                             cg.set('sync', 'path', '%s' % target_path)
@@ -229,17 +247,17 @@ def get_mail(target_path):
                             fp.close()
                             extractAll(att_path, target_path)
                             new_mail = True
-                            logprint('[mail-info]','attachment: %s' % att_path)
+                            logprint('[mail-info]', 'attachment: %s' % att_path)
                         except Exception as e:
-                            logprint('[mail-info]',"%s" % e)
+                            logprint('[mail-info]', "%s" % e)
                             att_path = "unable to extract attachment"
     except KeyboardInterrupt:
-        logprint("[mail-error]","login interrupted")
+        logprint("[mail-error]", "login interrupted")
         os._exit(0)
     except Exception as e:
-        logprint("[mail-error]","%s" % e)
+        logprint("[mail-error]", "%s" % e)
         os._exit(0)
-    # logprint("[mail] terminating imap connection")
+
     m.shutdown()
     return att_path
 
@@ -255,7 +273,7 @@ def send_mail(from_addr, to_addrs, msg):
         server.quit()
     except Exception as e:
         logprint(
-            "[mail-error]", "unknown exception error occurred while sending email\n%s"
+            "[mail-error]", "unknown error occurred when sending email\n%s"
             % e)
 
 
@@ -266,7 +284,7 @@ def send_notification(status, log_time, target_path):
         msg = MIMEMultipart("alternative")
 
         msg['Subject'] = "Alma - ILLiad Sync Notification"
-        msg['From'] = from_addr
+        msg['From'] = EMAIL_FROM
         msg['To'] = to_addrs
 
         if status == "success":
@@ -274,7 +292,7 @@ def send_notification(status, log_time, target_path):
         else:
             html = open('./failed.html', "rb").read()
             logs = MIMEApplication(open('./logs/sync-log_' + log_time))
-        # Attach HTML to the email
+        # Attach HTML to the email with logs
         body = MIMEText(html, 'html', 'UTF-8')
         msg.attach(body)
         if os.path.isfile(target_path + "/errors.txt"):
@@ -285,10 +303,10 @@ def send_notification(status, log_time, target_path):
             msg.attach(error_list)
             msg['Subject'] = "Alma - ILLiad Sync Notification"
         try:
-            send_mail(from_addr, to_addrs, msg)
-            logprint("[mail-info]","email sent to " + to_addrs)
+            send_mail(EMAIL_FROM, to_addrs, msg)
+            logprint("[mail-info]", "email sent to " + to_addrs)
         except SMTPAuthenticationError as e:
-            logprint("[mail-error]", e)
+            logprint("[mail-error]",  e)
 
 
 def logprint(code, stdout):
@@ -305,53 +323,64 @@ def sync_process(att_file_path, down_folder):
         # convert the data
         parse_alma_data(down_folder)
         # upload to ftp server
-        #upload_ftp(os.path.join(down_folder, OUTPUT_FILE))
+        upload_ftp(os.path.join(down_folder, OUTPUT_FILE))
         # send email notifications
-        #send_notification("success", date_time, down_folder)
+        send_notification("success", date_time, down_folder)
         # unset new email flag
-        with open('sync.pid', 'w') as pidfile:
+        with open(PID_FILE, 'w') as pidfile:
             cg.set('sync', 'clean_exit', 'true')
             cg.write(pidfile)
         new_mail = False
-        logprint("[info]", "process completed")
+        logprint("[info]",  "process completed")
     elif att_file_path == "":
-        logprint("[info]", "no new mail!")
+        logprint("[info]",  "no new mail!")
         # heartbeat - BG TIME
-        with open('sync.pid', 'w') as pidfile:
+        with open(PID_FILE, 'w') as pidfile:
             cg.set('sync', 'PID', '%s' % str(os.getpid()))
             cg.write(pidfile)
     else:
-        logprint("[mail-error]", att_file_path)
+        logprint("[mail-error]",  att_file_path)
 
 
 def process_args():
+    global args
     # parser.add_argument('--pid-file', help='PID file path. Default: Current Directory')
     parser.add_argument('--daemon', help='Run in daemon mode', action='store_true')
     parser.add_argument('--logging', help='Run in daemon mode', action='store_true')
     parser.add_argument(
         '--stop', help='Shutdown the current process', action='store_true')
     args = parser.parse_args()
-    if(args.stop):
-        print("trying to kill process %s" %(args.daemon))
-        os.kill(os.getpid(), signal.SIGTERM)
-    # initialize pid file
+
+    # Evaluate the previous exit & terminate duplicate process
     try:
-        cg.read("sync.pid")
+        cg.read(PID_FILE)
+        if (args.stop or pid_exists(cg.getint('sync', 'pid'))):
+            try:
+                os.kill(cg.getint('sync', 'pid'), signal.SIGTERM)
+                print("Terminated process %s" % cg.getint('sync', 'pid'))
+                if(args.stop):
+                    os._exit(0)
+            except PermissionError:
+                print("Unable to temrinate process %s" % cg.getint('sync', 'pid'))
+                os._exit(0)
+            except Exception as e:
+                print("%s" % e)
+                os._exit(0)
+
         if (not(cg.getboolean('sync', 'clean_exit'))):
             logprint(
                 "[warn]",
                 "previous run did not exit clean, attempting to process again")
             # finish it before proceeding
             sync_process(str(cg.get('sync', 'file')), str(cg.get('sync', 'path')))
-    except NoOptionError:
-        # move on
+    except:
         pass
-    except NoSectionError:
-        pass
-    with open('sync.pid', 'w') as pidfile:
+
+    # initialize pid file
+    with open(PID_FILE, 'w') as pidfile:
         try:
             cg.add_section('sync')
-        except DuplicateSectionError:
+        except:
             pass
         cg.set('sync', 'PID', '%s' % str(os.getpid()))
         cg.set('sync', 'clean_exit', 'true')
@@ -360,18 +389,24 @@ def process_args():
 
 if __name__ == '__main__':
 
+    if sys.version_info <= (3, 0):
+        sys.stdout.write(
+            "Sorry, this application requires Python 3.0 or greater. You're running %s\n"
+            % sys.version_info)
+        os._exit(0)
+
     # Read & Process arguments
     process_args()
 
     if not (EMAIL_USER and EMAIL_PASS and IMAP_SERVER and IMAP_PORT):
-        logprint("\n[error]","email credentials or server parameters empty!\n")
+        logprint("\n[error]",  "email credentials or server parameters are empty!\n")
         os._exit(0)
 
     if not (FTP_SERVER and FTP_PORT and FTP_USERNAME and FTP_PASSWORD):
-        logprint("\n[error]","ftp server credentials or parameters empty!\n")
+        logprint("\n[error]",  "ftp server credentials or parameters are empty!\n")
         os._exit(0)
 
-    if LOGGING:
+    if LOGGING or args.logging:
         if not os.path.exists("./logs"):
             os.mkdir("./logs")
         log_file = open(
@@ -379,22 +414,19 @@ if __name__ == '__main__':
             datetime.datetime.now().strftime("%Y-%m-%d_%H-%M") + ".txt", "w")
         sys.stdout = Logger(log_file, sys.stdout)
 
-    logprint("[info]","initiating...")
+    logprint("[info]",  "initiating...")
 
     while True:
-        # Before write implement read and restore state
-        # implement socket here
-
         date_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
         DOWNLOAD_FOLDER = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), date_time)
         TARGET_PATH = get_mail(DOWNLOAD_FOLDER)  # attachment file target path
         sync_process(TARGET_PATH, DOWNLOAD_FOLDER)
-        if (BACKGROUND_ENABLED or cg.daemon):
+        if (BACKGROUND_ENABLED or args.daemon):
             try:
                 time.sleep(SLEEP_INTERVAL)
             except KeyboardInterrupt:
-                logprint("[debug]", "interrupted")
+                logprint("[debug]",  "interrupted")
                 os._exit(0)
         else:
             break
