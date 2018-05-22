@@ -11,8 +11,10 @@
 # Note: Entries with barcodes having "-" are discarded due to import error w/ ILLiad.  (line: 91-108)
 #       Usage: python3 sync.py
 
-import sys, os, codecs, datetime, time, logging
+import sys, os, codecs, datetime, time, logging, signal
+import argparse
 import csv
+from configparser import ConfigParser, NoOptionError, NoSectionError, DuplicateSectionError
 import imaplib, email, ftplib, smtplib
 from zipfile import ZipFile as zip
 from email.mime.multipart import MIMEMultipart
@@ -30,7 +32,7 @@ OUTPUT_FILE = ('UserValidation.txt')  # output filename
 
 LOGGING = True
 BACKGROUND_ENABLED = True
-SLEEP_INTERVAL = 900  # seconds (BACKGROUND MUST BE ENABLED!)
+SLEEP_INTERVAL = 5  # seconds (BACKGROUND MUST BE ENABLED!)
 
 # EMAIL (IMAP & SMTP) Login Credentials
 EMAIL_USER = ""
@@ -40,7 +42,7 @@ IMAP_PORT = 993
 SMTP_SERVER = ""
 SMTP_PORT = 587
 # Alma Report Dispatcher's email address
-EMAIL_SENDER = ""  # e-mail address of the incoming reports
+EMAIL_SENDER = "Your.Department@organization.com"  # e-mail address of the incoming reports
 EMAIL_AGE_LIMIT = 5  # email expiry (days)
 
 # Payload destination FTP credentials
@@ -59,7 +61,8 @@ illiad_header = (
     'ArticleBillingCategory, LoanBillingCategory, Country, SAddress, SAddress2, SCity, SState, SZip, PasswordHint,'
     ' SCountry, Blocked, PlainTextPassword, UserRequestLimit, UserInfo1, UserInfo2, UserInfo3, UserInfo4, UserInfo5\r\n'
 )
-
+cg = ConfigParser()
+parser = argparse.ArgumentParser()
 new_mail = False
 from_addr = EMAIL_USER
 
@@ -129,8 +132,8 @@ def parse_alma_data(target_path):
                         print("Bad data at index: " + (str(index + 1)))
                 if error_strings != "Line " + (str(index + 1)):
                     with open(target_path + "/" + "errors.txt",
-                              "a") as string_dump:
-                        string_dump.write(error_strings + "\r\n")
+                              "a") as error_dump:
+                        error_dump.write(error_strings + "\r\n")
             if conv_success:
                 logprint("[info]","processed total of " + str(
                     (index)) + " entries.")
@@ -199,7 +202,7 @@ def get_mail(target_path):
                     time_diff = datetime.datetime.now() - local_mail_date
                     if time_diff.days > EMAIL_AGE_LIMIT:
                         logprint(
-                            "[mail-info]","skipping email %s received more than %s days ago ( %s )"
+                            "[mail-info] skipping email %s received more than %s days ago ( %s )"
                             % (message_index + 1, EMAIL_AGE_LIMIT,
                                local_mail_date.strftime("%Y-%m-%d %H:%M")))
                         continue
@@ -211,9 +214,15 @@ def get_mail(target_path):
                         continue
                     filename = part.get_filename()
                     if "zip" in filename:
+                        # set pid flag
                         if not os.path.isdir(target_path):
                             os.mkdir(target_path)
                         att_path = os.path.join(target_path, filename)
+                        with open('sync.pid', 'w') as pidfile:
+                            cg.set('sync', 'clean_exit', 'false')
+                            cg.set('sync', 'file', '%s' % att_path)
+                            cg.set('sync', 'path', '%s' % target_path)
+                            cg.write(pidfile)
                         try:
                             fp = open(att_path, 'wb')
                             fp.write(part.get_payload(decode=True))
@@ -290,7 +299,69 @@ def logprint(code, stdout):
            stdout))
 
 
+def sync_process(att_file_path, down_folder):
+    global new_mail
+    if os.path.isfile(att_file_path):
+        # convert the data
+        parse_alma_data(down_folder)
+        # upload to ftp server
+        #upload_ftp(os.path.join(down_folder, OUTPUT_FILE))
+        # send email notifications
+        #send_notification("success", date_time, down_folder)
+        # unset new email flag
+        with open('sync.pid', 'w') as pidfile:
+            cg.set('sync', 'clean_exit', 'true')
+            cg.write(pidfile)
+        new_mail = False
+        logprint("[info]", "process completed")
+    elif att_file_path == "":
+        logprint("[info]", "no new mail!")
+        # heartbeat - BG TIME
+        with open('sync.pid', 'w') as pidfile:
+            cg.set('sync', 'PID', '%s' % str(os.getpid()))
+            cg.write(pidfile)
+    else:
+        logprint("[mail-error]", att_file_path)
+
+
+def process_args():
+    # parser.add_argument('--pid-file', help='PID file path. Default: Current Directory')
+    parser.add_argument('--daemon', help='Run in daemon mode', action='store_true')
+    parser.add_argument('--logging', help='Run in daemon mode', action='store_true')
+    parser.add_argument(
+        '--stop', help='Shutdown the current process', action='store_true')
+    args = parser.parse_args()
+    if(args.stop):
+        print("trying to kill process %s" %(args.daemon))
+        os.kill(os.getpid(), signal.SIGTERM)
+    # initialize pid file
+    try:
+        cg.read("sync.pid")
+        if (not(cg.getboolean('sync', 'clean_exit'))):
+            logprint(
+                "[warn]",
+                "previous run did not exit clean, attempting to process again")
+            # finish it before proceeding
+            sync_process(str(cg.get('sync', 'file')), str(cg.get('sync', 'path')))
+    except NoOptionError:
+        # move on
+        pass
+    except NoSectionError:
+        pass
+    with open('sync.pid', 'w') as pidfile:
+        try:
+            cg.add_section('sync')
+        except DuplicateSectionError:
+            pass
+        cg.set('sync', 'PID', '%s' % str(os.getpid()))
+        cg.set('sync', 'clean_exit', 'true')
+        cg.write(pidfile)
+
+
 if __name__ == '__main__':
+
+    # Read & Process arguments
+    process_args()
 
     if not (EMAIL_USER and EMAIL_PASS and IMAP_SERVER and IMAP_PORT):
         logprint("\n[error]","email credentials or server parameters empty!\n")
@@ -309,31 +380,21 @@ if __name__ == '__main__':
         sys.stdout = Logger(log_file, sys.stdout)
 
     logprint("[info]","initiating...")
+
     while True:
+        # Before write implement read and restore state
         # implement socket here
+
         date_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
         DOWNLOAD_FOLDER = os.path.join(
             os.path.dirname(os.path.realpath(__file__)), date_time)
         TARGET_PATH = get_mail(DOWNLOAD_FOLDER)  # attachment file target path
-        if os.path.isfile(TARGET_PATH):
-            # convert the data
-            parse_alma_data(DOWNLOAD_FOLDER)
-            # upload to ftp server
-            upload_ftp(os.path.join(DOWNLOAD_FOLDER, OUTPUT_FILE))
-            # send email notifications
-            send_notification("success", date_time, DOWNLOAD_FOLDER)
-            # unset new email flag
-            new_mail = False
-            logprint("[info]","process completed")
-        elif TARGET_PATH == "":
-            logprint("[info]","no new mail!")
-        else:
-            logprint("[mail-error]",TARGET_PATH)
-        if BACKGROUND_ENABLED:
+        sync_process(TARGET_PATH, DOWNLOAD_FOLDER)
+        if (BACKGROUND_ENABLED or cg.daemon):
             try:
                 time.sleep(SLEEP_INTERVAL)
             except KeyboardInterrupt:
-                logprint("[debug]","interrupted")
+                logprint("[debug]", "interrupted")
                 os._exit(0)
         else:
             break
